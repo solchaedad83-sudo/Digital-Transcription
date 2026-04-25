@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>필사</title>
+<style>
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f5f5f3;
+    --text-primary: #1a1a1a;
+    --text-secondary: #6b6b6b;
+    --text-tertiary: #b0b0b0;
+    --border: rgba(0,0,0,0.12);
+    --border-mid: rgba(0,0,0,0.22);
+    --green: #1D9E75;
+    --green-dark: #0F6E56;
+    --red: #A32D2D;
+    --radius: 8px;
+    --font: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+    --font-size: 15px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-primary: #1c1c1e;
+      --bg-secondary: #2c2c2e;
+      --text-primary: #f0f0f0;
+      --text-secondary: #9a9a9a;
+      --text-tertiary: #555;
+      --border: rgba(255,255,255,0.1);
+      --border-mid: rgba(255,255,255,0.2);
+      --red: #e06060;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font-family: var(--font); background: var(--bg-secondary); color: var(--text-primary); }
+  #app { display: flex; flex-direction: column; height: 100vh; max-height: 100vh; }
+  #toolbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 0.5px solid var(--border); background: var(--bg-secondary); flex-shrink: 0; }
+  #toolbar-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+  #app-title { font-size: 13px; font-weight: 600; color: var(--text-primary); flex-shrink: 0; }
+  #progress-bar-wrap { flex: 1; max-width: 180px; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  #progress-bar { height: 100%; width: 0%; background: var(--green); border-radius: 2px; transition: width 0.2s; }
+  #progress-label { font-size: 12px; color: var(--text-secondary); min-width: 34px; text-align: right; flex-shrink: 0; }
+  #toolbar-right { display: flex; gap: 8px; align-items: center; }
+  .tool-btn { font-size: 12px; padding: 5px 11px; border: 0.5px solid var(--border-mid); border-radius: var(--radius); background: transparent; color: var(--text-primary); cursor: pointer; flex-shrink: 0; transition: background 0.15s; }
+  .tool-btn:hover { background: var(--border); }
+  #copy-btn.copied { color: var(--green-dark); border-color: var(--green); }
+  #panels { display: flex; flex: 1; overflow: hidden; }
+  .panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; border-right: 0.5px solid var(--border); background: var(--bg-primary); }
+  .panel:last-child { border-right: none; }
+  .panel-header { font-size: 11px; font-weight: 600; color: var(--text-secondary); padding: 8px 16px 6px; letter-spacing: 0.07em; text-transform: uppercase; border-bottom: 0.5px solid var(--border); flex-shrink: 0; background: var(--bg-primary); }
+
+  /* 원문 */
+  #source-wrap { flex: 1; overflow: hidden; position: relative; }
+  #source-paste { position: absolute; inset: 0; width: 100%; height: 100%; border: none; outline: none; background: transparent; resize: none; font-size: var(--font-size); line-height: 1.85; font-family: var(--font); padding: 16px; opacity: 0; pointer-events: none; color: transparent; caret-color: transparent; word-break: break-all; white-space: pre-wrap; }
+  #source-paste.editing { opacity: 1; color: var(--text-primary); caret-color: var(--text-primary); pointer-events: auto; }
+  #source-display { position: absolute; inset: 0; padding: 16px; font-size: var(--font-size); line-height: 1.85; overflow-y: auto; word-break: break-all; white-space: pre-wrap; pointer-events: none; font-family: var(--font); }
+  #source-display.hidden { display: none; }
+
+  .s-done       { color: var(--text-tertiary); }
+  .s-pending    { color: var(--text-primary); }
+  .s-error-char { color: var(--red); font-weight: 700; }
+
+  /* 다음 입력 위치 커서 — 정상(초록) */
+  .s-cursor { position: relative; }
+  .s-cursor::before { content: ''; position: absolute; left: -1px; top: 0.12em; width: 2px; height: 1.2em; background: var(--green); border-radius: 1px; animation: blink 1s step-end infinite; }
+
+  /* 다음 입력 위치 커서 — 오타 중(빨강) */
+  .s-cursor-err { position: relative; }
+  .s-cursor-err::before { content: ''; position: absolute; left: -1px; top: 0.12em; width: 2px; height: 1.2em; background: var(--red); border-radius: 1px; animation: blink 1s step-end infinite; }
+
+  #edit-hint { font-size: 11px; color: var(--text-tertiary); padding: 4px 16px 6px; text-align: right; flex-shrink: 0; }
+
+  /* 필사 */
+  #right-panel { position: relative; }
+  #typed-area { flex: 1; position: relative; overflow: hidden; }
+  #typed-textarea { position: absolute; inset: 0; width: 100%; height: 100%; border: none; outline: none; background: transparent; resize: none; font-size: var(--font-size); line-height: 1.85; font-family: var(--font); padding: 16px; z-index: 2; color: transparent; caret-color: var(--text-primary); cursor: text; overflow-y: auto; word-break: break-all; white-space: pre-wrap; }
+  #typed-textarea::selection { background: rgba(29, 158, 117, 0.3); }
+  #typed-display { position: absolute; inset: 0; padding: 16px; font-size: var(--font-size); line-height: 1.85; overflow-y: auto; word-break: break-all; white-space: pre-wrap; pointer-events: none; z-index: 1; font-family: var(--font); }
+  .t-correct   { color: var(--text-primary); }
+  .t-incorrect { color: var(--red); }
+  .t-composing { color: var(--text-secondary); border-bottom: 1.5px solid var(--text-secondary); }
+
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+  #stats { display: flex; gap: 20px; padding: 8px 16px; border-top: 0.5px solid var(--border); background: var(--bg-secondary); flex-shrink: 0; }
+  .stat { font-size: 11px; color: var(--text-secondary); }
+  .stat b { font-weight: 600; color: var(--text-primary); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <div id="toolbar-left">
+      <span id="app-title">✍ 필사</span>
+      <div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+      <span id="progress-label">0%</span>
+    </div>
+    <div id="toolbar-right">
+      <button class="tool-btn" id="font-dec-btn" title="글자 작게">A-</button>
+      <button class="tool-btn" id="font-inc-btn" title="글자 크게">A+</button>
+      <button class="tool-btn" id="reset-btn" onclick="resetTyping()">초기화</button>
+      <button class="tool-btn" id="copy-btn" onclick="copyResult()">복사</button>
+    </div>
+  </div>
+  <div id="panels">
+    <div class="panel" id="left-panel">
+      <div class="panel-header">원문</div>
+      <div id="source-wrap">
+        <textarea id="source-paste" placeholder="여기에 필사할 글을 붙여넣으세요." spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+        <div id="source-display"></div>
+      </div>
+      <div id="edit-hint">클릭해서 편집</div>
+    </div>
+    <div class="panel" id="right-panel">
+      <div class="panel-header">필사</div>
+      <div id="typed-area">
+        <textarea id="typed-textarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+        <div id="typed-display"></div>
+      </div>
+    </div>
+  </div>
+  <div id="stats">
+    <div class="stat">입력 <b id="stat-typed">0</b>자</div>
+    <div class="stat">정확도 <b id="stat-acc">—</b></div>
+    <div class="stat">오류 <b id="stat-err">0</b>자</div>
+  </div>
+</div>
+<script>
+const sourcePaste   = document.getElementById('source-paste');
+const sourceDisplay = document.getElementById('source-display');
+const typedTextarea = document.getElementById('typed-textarea');
+const typedDisplay  = document.getElementById('typed-display');
+const progressBar   = document.getElementById('progress-bar');
+const progressLabel = document.getElementById('progress-label');
+const editHint      = document.getElementById('edit-hint');
+
+let source = '', typed = '', composing = '';
+let errors = 0, started = false, startTime = null;
+let isComposing = false, editing = false;
+
+const NORM = {
+  '\u2018':"'", '\u2019':"'", '\u201C':'"', '\u201D':'"',
+  '\u2013':'-',  '\u2014':'-', '\u2015':'-',
+  '\u2026':'...', '\uFF5E':'~', '\u3000':' '
+};
+function normalize(s){ let r=''; for(const c of s) r+=(NORM[c]!==undefined?NORM[c]:c); return r; }
+function eq(a,b){ return normalize(a)===normalize(b); }
+function esc(c){ return c==='&'?'&amp;':c==='<'?'&lt;':c==='>'?'&gt;':c; }
+
+function renderSource(){
+  source = sourcePaste.value;
+  if(!source){
+    sourceDisplay.innerHTML='<span style="color:var(--text-tertiary);font-size:14px;">여기에 필사할 글을 붙여넣으세요.</span>';
+    return;
+  }
+
+  const tLen = typed.length + (isComposing ? 1 : 0);
+  // 가장 최근 확정 글자가 오타인지 확인
+  const prevIdx = tLen - 1;
+  const hasError = prevIdx >= 0 && prevIdx < typed.length && !eq(typed[prevIdx], source[prevIdx]);
+
+  let html = '';
+  for(let i = 0; i < source.length; i++){
+    const d = source[i] === '\n' ? '<br>' : esc(source[i]);
+
+    if(i < prevIdx){
+      // 이미 지나간 글자 — 흐리게
+      html += `<span class="s-done">${d}</span>`;
+
+    } else if(i === prevIdx && tLen > 0){
+      // 방금 입력한 글자 — 오타면 빨갛게, 정타면 흐리게
+      html += hasError
+        ? `<span class="s-error-char">${d}</span>`
+        : `<span class="s-done">${d}</span>`;
+
+    } else if(i === tLen){
+      // 다음에 입력해야 할 글자 — 커서 (오타 중이면 빨간 커서)
+      const cc = hasError ? 's-cursor-err' : 's-cursor';
+      html += `<span class="${cc} s-pending">${d}</span>`;
+
+    } else {
+      html += `<span class="s-pending">${d}</span>`;
+    }
+  }
+
+  sourceDisplay.innerHTML = html;
+  const cur = sourceDisplay.querySelector('.s-cursor, .s-cursor-err');
+  if(cur) cur.scrollIntoView({ block:'nearest', behavior:'smooth' });
+}
+
+function renderTyped(){
+  source = sourcePaste.value;
+  if(!source){
+    typedDisplay.innerHTML='<span style="color:var(--text-tertiary);font-size:14px;">원문을 붙여넣으면 여기서 따라 쓸 수 있습니다.</span>';
+    return;
+  }
+  if(typed.length === 0 && !composing){
+    typedDisplay.innerHTML='';
+    return;
+  }
+  let html = '';
+  for(let i = 0; i < typed.length; i++){
+    const ch = typed[i], exp = source[i] || '';
+    const d = ch === '\n' ? '<br>' : esc(ch);
+    html += `<span class="${eq(ch,exp)?'t-correct':'t-incorrect'}">${d}</span>`;
+  }
+  if(isComposing && composing) html += `<span class="t-composing">${esc(composing)}</span>`;
+  typedDisplay.innerHTML = html;
+}
+
+function updateStats(){
+  source = sourcePaste.value;
+  const total = source.length;
+  const cur = typed.length + (isComposing ? 1 : 0);
+  const pct = total ? Math.round((cur / total) * 100) : 0;
+  progressBar.style.width = Math.min(pct, 100) + '%';
+  progressLabel.textContent = pct + '%';
+  document.getElementById('stat-typed').textContent = typed.length;
+  document.getElementById('stat-err').textContent = errors;
+  document.getElementById('stat-acc').textContent = typed.length > 0
+    ? Math.round(((typed.length - errors) / typed.length) * 100) + '%'
+    : '—';
+}
+
+function syncFromTextarea(){
+  const val = typedTextarea.value;
+  if(val === typed) return;
+  source = sourcePaste.value;
+  let newErr = 0;
+  for(let i = 0; i < val.length; i++){
+    if(!eq(val[i], source[i] || '')) newErr++;
+  }
+  typed = val; errors = newErr;
+  if(typed.length > 0 && !started){ started = true; startTime = Date.now(); }
+  renderSource(); renderTyped(); updateStats();
+}
+
+function copyResult(){
+  const btn = document.getElementById('copy-btn');
+  if(!typed) return;
+  const done = () => {
+    btn.textContent = '복사됨!'; btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = '복사'; btn.classList.remove('copied'); }, 1500);
+  };
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(typed).then(done).catch(() => fallbackCopy(done));
+  } else { fallbackCopy(done); }
+}
+function fallbackCopy(cb){
+  const ta = document.createElement('textarea');
+  ta.value = typed; document.body.appendChild(ta); ta.select();
+  document.execCommand('copy'); document.body.removeChild(ta); cb();
+}
+
+/* 원문 편집 */
+document.getElementById('left-panel').addEventListener('click', () => {
+  if(editing) return;
+  editing = true;
+  sourcePaste.classList.add('editing');
+  sourceDisplay.classList.add('hidden');
+  editHint.textContent = '다른 곳 클릭 시 편집 완료';
+  sourcePaste.focus();
+});
+sourcePaste.addEventListener('blur', () => {
+  editing = false;
+  sourcePaste.classList.remove('editing');
+  sourceDisplay.classList.remove('hidden');
+  editHint.textContent = '클릭해서 편집';
+  typed = ''; composing = ''; errors = 0;
+  started = false; startTime = null; isComposing = false;
+  typedTextarea.value = '';
+  renderSource(); renderTyped(); updateStats();
+});
+
+/* IME (한글 등 조합 문자) */
+typedTextarea.addEventListener('compositionstart', () => { isComposing = true; });
+typedTextarea.addEventListener('compositionupdate', (e) => {
+  composing = e.data || '';
+  renderSource(); renderTyped(); updateStats();
+});
+typedTextarea.addEventListener('compositionend', () => {
+  isComposing = false; composing = '';
+  setTimeout(() => syncFromTextarea(), 0);
+});
+
+/* 키 입력 */
+typedTextarea.addEventListener('input', (e) => {
+  if(isComposing) return;
+  syncFromTextarea();
+});
+
+typedTextarea.addEventListener('scroll', () => {
+  typedDisplay.scrollTop = typedTextarea.scrollTop;
+  sourceDisplay.scrollTop = typedTextarea.scrollTop;
+  sourcePaste.scrollTop = typedTextarea.scrollTop;
+});
+
+function resetTyping() {
+  if(!confirm('작성한 내용을 모두 지우고 처음부터 다시 시작하시겠습니까?')) return;
+  typed = ''; composing = ''; errors = 0;
+  started = false; startTime = null; isComposing = false;
+  typedTextarea.value = '';
+  renderSource(); renderTyped(); updateStats();
+  typedTextarea.focus();
+}
+
+let currentFontSize = 15;
+function changeFontSize(delta) {
+  currentFontSize += delta;
+  if(currentFontSize < 10) currentFontSize = 10;
+  if(currentFontSize > 30) currentFontSize = 30;
+  document.documentElement.style.setProperty('--font-size', currentFontSize + 'px');
+}
+document.getElementById('font-inc-btn').addEventListener('click', () => changeFontSize(2));
+document.getElementById('font-dec-btn').addEventListener('click', () => changeFontSize(-2));
+
+renderSource(); renderTyped(); updateStats();
+</script>
+</body>
+</html>
