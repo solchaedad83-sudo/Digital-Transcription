@@ -123,6 +123,17 @@
       align-items: center;
     }
 
+    #doc-select {
+      min-width: 150px;
+      max-width: 220px;
+      font-size: 12px;
+      padding: 5px 8px;
+      border: 0.5px solid var(--border-mid);
+      border-radius: var(--radius);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+    }
+
     .tool-btn {
       font-size: 12px;
       padding: 5px 11px;
@@ -247,6 +258,15 @@
 
     .s-pending {
       color: var(--text-primary);
+    }
+
+    .s-newline {
+      display: inline-block;
+      color: var(--text-tertiary);
+      font-size: 0.78em;
+      line-height: 1;
+      margin-left: 2px;
+      transform: translateY(-0.08em);
     }
 
     .s-error-char {
@@ -376,21 +396,101 @@
 
     #stats {
       display: flex;
+      align-items: center;
       gap: 20px;
       padding: 8px 16px;
       border-top: 0.5px solid var(--border);
       background: var(--bg-secondary);
       flex-shrink: 0;
+      overflow-x: auto;
     }
 
     .stat {
       font-size: 11px;
       color: var(--text-secondary);
+      white-space: nowrap;
     }
 
     .stat b {
       font-weight: 600;
       color: var(--text-primary);
+    }
+
+    #completion-badge {
+      margin-left: auto;
+      color: var(--green-dark);
+      display: none;
+    }
+
+    #completion-badge.visible {
+      display: block;
+    }
+
+    @media (max-width: 760px) {
+      #app {
+        height: 100dvh;
+        max-height: 100dvh;
+      }
+
+      #toolbar {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 8px;
+        padding: 8px 10px;
+      }
+
+      #toolbar-left,
+      #toolbar-right {
+        width: 100%;
+      }
+
+      #toolbar-right {
+        gap: 6px;
+        overflow-x: auto;
+        padding-bottom: 1px;
+      }
+
+      #doc-select {
+        min-width: 128px;
+      }
+
+      .tool-btn {
+        padding: 5px 9px;
+      }
+
+      #panels {
+        flex-direction: column;
+      }
+
+      .panel {
+        min-height: 0;
+        border-right: none;
+      }
+
+      #left-panel {
+        flex: 0 0 42%;
+        border-bottom: 0.5px solid var(--border);
+      }
+
+      #right-panel {
+        flex: 1 1 58%;
+      }
+
+      .panel-header {
+        padding: 6px 12px 5px;
+      }
+
+      #source-paste,
+      #source-display,
+      #typed-textarea,
+      #typed-display {
+        padding: 12px;
+      }
+
+      #stats {
+        gap: 14px;
+        padding: 7px 10px;
+      }
     }
   </style>
 </head>
@@ -406,6 +506,9 @@
         <span id="progress-label">0%</span>
       </div>
       <div id="toolbar-right">
+        <select id="doc-select" title="저장된 원문"></select>
+        <button class="tool-btn" id="save-doc-btn" title="현재 원문 저장">저장</button>
+        <button class="tool-btn" id="new-doc-btn" title="새 원문">새 글</button>
         <button class="tool-btn" id="theme-btn" title="테마 변경">🌙</button>
         <button class="tool-btn" id="font-dec-btn" title="글자 작게">A-</button>
         <button class="tool-btn" id="font-inc-btn" title="글자 크게">A+</button>
@@ -442,6 +545,9 @@
       <div class="stat">입력 <b id="stat-typed">0</b>자</div>
       <div class="stat">정확도 <b id="stat-acc">—</b></div>
       <div class="stat">오류 <b id="stat-err">0</b>자</div>
+      <div class="stat">속도 <b id="stat-wpm">—</b></div>
+      <div class="stat">연속 <b id="stat-streak">0</b>자</div>
+      <div class="stat" id="completion-badge">완료</div>
     </div>
   </div>
   <script>
@@ -454,6 +560,15 @@
     const progressBar = document.getElementById('progress-bar');
     const progressLabel = document.getElementById('progress-label');
     const editHint = document.getElementById('edit-hint');
+    const docSelect = document.getElementById('doc-select');
+    const saveDocBtn = document.getElementById('save-doc-btn');
+    const newDocBtn = document.getElementById('new-doc-btn');
+    const statTyped = document.getElementById('stat-typed');
+    const statErr = document.getElementById('stat-err');
+    const statAcc = document.getElementById('stat-acc');
+    const statWpm = document.getElementById('stat-wpm');
+    const statStreak = document.getElementById('stat-streak');
+    const completionBadge = document.getElementById('completion-badge');
 
     function autoResize(el) {
       if (!el) return;
@@ -484,7 +599,8 @@
     let source = '', typed = '', composing = '';
     let errors = 0, started = false, startTime = null;
     let isComposing = false, editing = false;
-    let prevTypedLen = 0;
+    let prevTypedLen = 0, currentStreak = 0;
+    let currentDocId = null;
 
     const NORM = {
       '\u2018': "'", '\u2019': "'", '\u201C': '"', '\u201D': '"',
@@ -493,28 +609,39 @@
     };
     function normalize(s) { let r = ''; for (const c of s) r += (NORM[c] !== undefined ? NORM[c] : c); return r; }
     function eq(a, b) { return normalize(a) === normalize(b); }
-    function esc(c) { return c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c; }
+    function esc(c) {
+      return c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c;
+    }
 
     let sourceSpans = [];
+    let lastCursorIdx = 0;
+    let lastSourceSnapshot = '';
+
+    function setSourceSpanClass(i, className) {
+      const span = sourceSpans[i];
+      if (span && span.className !== className) span.className = className;
+    }
+
     function initSourceDisplay() {
       source = sourcePaste.value;
       if (!source) {
         sourceDisplay.innerHTML = '<span style="color:var(--text-tertiary);font-size:14px;">여기에 필사할 글을 붙여넣으세요.</span>';
         sourceSpans = [];
+        lastSourceSnapshot = '';
         return;
       }
 
       const fragment = document.createDocumentFragment();
       sourceSpans = [];
-      
+
       for (let i = 0; i < source.length; i++) {
         const span = document.createElement('span');
         const c = source[i];
         if (c === '\n') {
-          const br = document.createElement('br');
-          fragment.appendChild(br);
-          span.style.display = 'none';
+          span.textContent = '↵';
+          span.className = 's-newline s-pending';
           fragment.appendChild(span);
+          fragment.appendChild(document.createElement('br'));
         } else {
           span.textContent = c;
           span.className = 's-pending';
@@ -522,52 +649,55 @@
         }
         sourceSpans.push(span);
       }
-      
+
       sourceDisplay.innerHTML = '';
       sourceDisplay.appendChild(fragment);
-      
+      lastSourceSnapshot = source;
+      lastCursorIdx = 0;
       autoResize(sourcePaste);
+      renderSource(true);
     }
 
-    function renderSource() {
+    function renderSource(forceFull = false) {
       source = sourcePaste.value;
       if (!source) {
         sourceDisplay.innerHTML = '<span style="color:var(--text-tertiary);font-size:14px;">여기에 필사할 글을 붙여넣으세요.</span>';
         sourceSpans = [];
+        lastSourceSnapshot = '';
         return;
       }
 
-      if (sourceSpans.length === 0) {
+      if (sourceSpans.length !== source.length || lastSourceSnapshot !== source) {
         initSourceDisplay();
-        if (sourceSpans.length === 0) return;
+        return;
       }
 
       const tLen = typed.length + (isComposing ? 1 : 0);
-      // 가장 최근 확정 글자가 오타인지 확인
       const prevIdx = tLen - 1;
       const hasError = prevIdx >= 0 && prevIdx < typed.length && !eq(typed[prevIdx], source[prevIdx]);
+      const cursorIdx = Math.min(tLen, sourceSpans.length - 1);
+      let start = 0;
+      let end = sourceSpans.length - 1;
 
-      for (let i = 0; i < sourceSpans.length; i++) {
-        const span = sourceSpans[i];
-        if (!span) continue;
+      if (!forceFull) {
+        start = Math.max(0, Math.min(lastCursorIdx, cursorIdx, prevIdx) - 3);
+        end = Math.min(sourceSpans.length - 1, Math.max(lastCursorIdx, cursorIdx, prevIdx) + 3);
+      }
 
+      for (let i = start; i <= end; i++) {
         if (i < prevIdx) {
-          if (span.className !== 's-done') span.className = 's-done';
+          setSourceSpanClass(i, source[i] === '\n' ? 's-newline s-done' : 's-done');
         } else if (i === prevIdx && tLen > 0) {
           const targetClass = hasError ? 's-error-char' : 's-done';
-          if (span.className !== targetClass) span.className = targetClass;
+          setSourceSpanClass(i, source[i] === '\n' ? `s-newline ${targetClass}` : targetClass);
         } else if (i === tLen) {
           const targetClass = hasError ? 's-cursor-err s-pending' : 's-cursor s-pending';
-          if (span.className !== targetClass) span.className = targetClass;
+          setSourceSpanClass(i, source[i] === '\n' ? `s-newline ${targetClass}` : targetClass);
         } else {
-          if (span.className !== 's-pending') span.className = 's-pending';
+          setSourceSpanClass(i, source[i] === '\n' ? 's-newline s-pending' : 's-pending');
         }
       }
-
-      const cur = sourceDisplay.querySelector('.s-cursor, .s-cursor-err');
-      if (cur) {
-        // 자동 스크롤 제거됨. 브라우저의 기본 캐럿 스크롤에 맡김.
-      }
+      lastCursorIdx = cursorIdx;
     }
 
     function renderTyped() {
@@ -620,13 +750,31 @@
       const total = source.length;
       const cur = typed.length + (isComposing ? 1 : 0);
       const pct = total ? Math.round((cur / total) * 100) : 0;
-      progressBar.style.width = Math.min(pct, 100) + '%';
-      progressLabel.textContent = pct + '%';
-      document.getElementById('stat-typed').textContent = typed.length;
-      document.getElementById('stat-err').textContent = errors;
-      document.getElementById('stat-acc').textContent = typed.length > 0
-        ? Math.round(((typed.length - errors) / typed.length) * 100) + '%'
+      const clampedPct = Math.min(pct, 100);
+      const extra = Math.max(typed.length - total, 0);
+      progressBar.style.width = clampedPct + '%';
+      progressLabel.textContent = extra ? `${clampedPct}% +${extra}` : clampedPct + '%';
+      statTyped.textContent = typed.length;
+      statErr.textContent = errors;
+      statAcc.textContent = typed.length > 0
+        ? Math.max(0, Math.round(((typed.length - errors) / typed.length) * 100)) + '%'
         : '—';
+
+      currentStreak = 0;
+      for (let i = typed.length - 1; i >= 0; i--) {
+        if (!eq(typed[i], source[i] || '')) break;
+        currentStreak++;
+      }
+      statStreak.textContent = currentStreak;
+
+      if (started && startTime && typed.length > 0) {
+        const minutes = Math.max((Date.now() - startTime) / 60000, 1 / 60);
+        statWpm.textContent = Math.round(typed.length / minutes) + '자/분';
+      } else {
+        statWpm.textContent = '—';
+      }
+
+      completionBadge.classList.toggle('visible', total > 0 && typed.length === total && errors === 0);
     }
 
     function syncFromTextarea() {
@@ -642,13 +790,14 @@
       for (let i = 0; i < val.length; i++) {
         if (!eq(val[i], source[i] || '')) newErr++;
       }
-      
+
       const isShrinking = val.length < typed.length;
+      const needsFullSourceRender = isShrinking || Math.abs(val.length - typed.length) > 1;
       typed = val; errors = newErr;
       prevTypedLen = val.length;
 
       if (typed.length > 0 && !started) { started = true; startTime = Date.now(); }
-      renderSource(); renderTyped(); updateStats();
+      renderSource(needsFullSourceRender); renderTyped(); updateStats();
       autoResizeTyped(isShrinking);
       debouncedSaveState();
     }
@@ -697,7 +846,7 @@
       }
       errors = newErr;
 
-      renderSource(); renderTyped(); updateStats();
+      renderSource(true); renderTyped(); updateStats();
       debouncedSaveState();
     });
 
@@ -757,7 +906,7 @@
       started = false; startTime = null; isComposing = false;
       prevTypedLen = 0;
       typedTextarea.value = '';
-      renderSource(); renderTyped(); updateStats();
+      renderSource(true); renderTyped(); updateStats();
       autoResizeTyped(true);
       saveState();
       typedTextarea.focus();
@@ -783,11 +932,133 @@
     }
 
     const STORAGE_KEY = 'transcription_app_state';
+    const LIBRARY_KEY = 'transcription_doc_library';
+
+    function getLibrary() {
+      try {
+        return JSON.parse(localStorage.getItem(LIBRARY_KEY) || '[]');
+      } catch (e) {
+        console.error('Failed to load library', e);
+        return [];
+      }
+    }
+
+    function setLibrary(library) {
+      localStorage.setItem(LIBRARY_KEY, JSON.stringify(library));
+    }
+
+    function makeDocTitle(text) {
+      const firstLine = text.split('\n').map(line => line.trim()).find(Boolean);
+      if (!firstLine) return '제목 없는 글';
+      return firstLine.length > 24 ? firstLine.slice(0, 24) + '…' : firstLine;
+    }
+
+    function renderDocSelect() {
+      const library = getLibrary().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      docSelect.innerHTML = '';
+
+      const currentOption = document.createElement('option');
+      currentOption.value = '';
+      currentOption.textContent = '현재 글';
+      docSelect.appendChild(currentOption);
+
+      library.forEach(doc => {
+        const option = document.createElement('option');
+        option.value = doc.id;
+        option.textContent = doc.title || makeDocTitle(doc.source || '');
+        docSelect.appendChild(option);
+      });
+
+      docSelect.value = currentDocId || '';
+    }
+
+    function saveCurrentDoc() {
+      const sourceText = sourcePaste.value;
+      if (!sourceText.trim()) {
+        sourcePaste.focus();
+        return;
+      }
+
+      const library = getLibrary();
+      const now = Date.now();
+      let doc = currentDocId ? library.find(item => item.id === currentDocId) : null;
+
+      if (!doc) {
+        doc = { id: 'doc-' + now };
+        library.push(doc);
+        currentDocId = doc.id;
+      }
+
+      doc.title = doc.title || makeDocTitle(sourceText);
+      doc.source = sourceText;
+      doc.typed = typedTextarea.value;
+      doc.updatedAt = now;
+
+      setLibrary(library);
+      renderDocSelect();
+      saveDocBtn.textContent = '저장됨';
+      setTimeout(() => { saveDocBtn.textContent = '저장'; }, 1200);
+      saveState();
+    }
+
+    function loadDoc(id) {
+      if (!id) {
+        currentDocId = null;
+        saveState();
+        renderDocSelect();
+        return;
+      }
+
+      const doc = getLibrary().find(item => item.id === id);
+      if (!doc) return;
+
+      currentDocId = doc.id;
+      sourcePaste.value = doc.source || '';
+      typedTextarea.value = doc.typed || '';
+      typed = '';
+      errors = 0;
+      started = Boolean(typedTextarea.value);
+      startTime = started ? Date.now() : null;
+      isComposing = false;
+      composing = '';
+      initSourceDisplay();
+      syncFromTextarea();
+      renderSource(true); renderTyped(); updateStats();
+      autoResize(sourcePaste);
+      autoResizeTyped(true);
+      saveState();
+      renderDocSelect();
+    }
+
+    function newDocument() {
+      if ((sourcePaste.value || typedTextarea.value) && !confirm('현재 글을 닫고 새 글을 시작하시겠습니까?')) return;
+      currentDocId = null;
+      sourcePaste.value = '';
+      typedTextarea.value = '';
+      typed = ''; composing = ''; errors = 0;
+      started = false; startTime = null; isComposing = false;
+      prevTypedLen = 0; currentStreak = 0;
+      initSourceDisplay();
+      renderTyped(); updateStats();
+      autoResize(sourcePaste);
+      autoResizeTyped(true);
+      saveState();
+      renderDocSelect();
+      sourcePaste.classList.add('editing');
+      sourceDisplay.classList.add('hidden');
+      editing = true;
+      editHint.textContent = '다른 곳 클릭 시 편집 완료';
+      sourcePaste.focus();
+    }
+
     function saveState() {
       const state = {
         source: sourcePaste.value,
         typed: typedTextarea.value,
-        fontSize: currentFontSize
+        fontSize: currentFontSize,
+        currentDocId,
+        started,
+        startTime
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     }
@@ -801,6 +1072,9 @@
             typedTextarea.value = state.typed;
             syncFromTextarea();
           }
+          currentDocId = state.currentDocId || null;
+          started = Boolean(state.started && state.typed);
+          startTime = started ? (state.startTime || Date.now()) : null;
           if (state.fontSize && state.fontSize !== 15) {
             changeFontSize(state.fontSize - 15);
           }
@@ -808,7 +1082,12 @@
           console.error('Failed to load state', e);
         }
       }
+      renderDocSelect();
     }
+
+    saveDocBtn.addEventListener('click', saveCurrentDoc);
+    newDocBtn.addEventListener('click', newDocument);
+    docSelect.addEventListener('change', () => loadDoc(docSelect.value));
 
     let currentTheme = localStorage.getItem('transcription_theme') || 'auto';
     function applyTheme() {
